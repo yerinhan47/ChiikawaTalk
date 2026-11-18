@@ -25,6 +25,7 @@ public class ClientService extends Thread {
     }
 
     public String getUserName() { return UserName; }
+    void setUserName(String name) { UserName = name; }
     public ChatRoom getCurrentRoom() { return currentRoom; }
     public String getCharacterId() { return characterId; }
     void setCurrentRoom(ChatRoom room, String character) {
@@ -67,24 +68,28 @@ public class ClientService extends Thread {
             dos = new DataOutputStream(os);
 
             String line1 = dis.readUTF();
-            if (!line1.startsWith("/login ")) {
-                WriteOne("ERROR|로그인 형식을 확인하세요."); return;
+            boolean signup = line1.startsWith("/signup ");
+            if (!signup && !line1.startsWith("/login ")) {
+                WriteOne("AUTH_ERROR|로그인 형식을 확인하세요."); return;
             }
-            UserName = line1.substring(7).trim();
-            if (UserName.isEmpty() || UserName.length() > 20 || UserName.contains("|")
-                    || UserName.contains("\n") || UserName.contains("\r")) {
-                WriteOne("ERROR|닉네임은 1~20글자이며 | 또는 줄바꿈을 사용할 수 없습니다."); return;
+            String[] credentials = line1.substring(signup ? 8 : 7).split("\\|", -1);
+            if (credentials.length != 2) { WriteOne("AUTH_ERROR|로그인 형식을 확인하세요."); return; }
+            String name = credentials[0].trim(), password = credentials[1];
+            if (name.isEmpty() || name.length() > 20 || name.contains("\n") || name.contains("\r")
+                    || password.length() < 6 || password.length() > 64 || password.contains("\n") || password.contains("\r")) {
+                WriteOne("AUTH_ERROR|별명 1~20글자, 비밀번호 6~64글자를 입력하세요."); return;
             }
-            if (!server.register(this)) {
-                WriteOne("ERROR|이미 사용 중인 닉네임입니다."); return;
-            }
-            // 별도 로그인 성공 응답 없이 채팅방 목록 제공
+            try {
+                if (!server.authenticate(this, name, password, signup)) return;
+            } catch (IOException e) { WriteOne("AUTH_ERROR|계정 저장 또는 인증 처리 실패"); return; }
             server.sendRooms(this);
             while (true) {
                 String msg = dis.readUTF().trim();
                 if (msg.isEmpty()) continue;
                 if ("/exit".equalsIgnoreCase(msg)) break;
-                if (msg.equals("/rooms")) {
+                if (msg.equals("/friends")) {
+                    server.sendFriends(this);
+                } else if (msg.equals("/rooms")) {
                     server.sendRooms(this);
                 } else if (msg.startsWith("/create ")) {
                     server.createRoom(this, msg.substring(8).trim());

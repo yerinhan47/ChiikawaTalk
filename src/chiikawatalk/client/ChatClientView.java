@@ -12,6 +12,8 @@ public class ChatClientView extends JFrame {
     private final JPanel contentPane;
     private final CardLayout cards = new CardLayout();
     private final RoomListPanel roomList;
+    private final FriendListPanel friendList;
+    private final JTabbedPane homeTabs = new JTabbedPane();
     private final JTextField txtInput;
     private final String UserName;
     private final JButton btnSend;
@@ -22,8 +24,6 @@ public class ChatClientView extends JFrame {
     private final JLabel roomTitle;
     private final DefaultListModel<String> members = new DefaultListModel<>();
     private Socket socket;
-    private InputStream is;
-    private OutputStream os;
     private DataInputStream dis;
     private DataOutputStream dos;
     private volatile boolean closed;
@@ -31,7 +31,7 @@ public class ChatClientView extends JFrame {
     private int currentRoomId = -1;
     private boolean serverError;
 
-    public ChatClientView(String username, String ip_addr, String port_no, ChatClientMain main) throws IOException {
+    public ChatClientView(String username, Socket connectedSocket, DataInputStream input, DataOutputStream output, ChatClientMain main) {
         UserName = username;
         setTitle("치이카와 톡 - " + username);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
@@ -40,8 +40,20 @@ public class ChatClientView extends JFrame {
         setResizable(false);
         contentPane = new JPanel(cards);
         setContentPane(contentPane);
+        friendList = new FriendListPanel(this, username);
         roomList = new RoomListPanel(this);
-        contentPane.add(roomList, "ROOMS");
+        homeTabs.addTab("친구", friendList);
+        homeTabs.addTab("채팅", roomList);
+        JButton logout = new JButton("로그아웃");
+        logout.addActionListener(e -> { SendMessage("/exit"); closeSocket(); dispose(); });
+        JPanel home = new JPanel(new BorderLayout());
+        home.add(homeTabs, BorderLayout.CENTER);
+        JPanel footer = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        footer.add(logout); home.add(footer, BorderLayout.SOUTH);
+        homeTabs.addChangeListener(e -> {
+            if (homeTabs.getSelectedComponent() == roomList) SendMessage("/rooms");
+        });
+        contentPane.add(home, "ROOMS");
 
         // 기존 채팅 GUI는 좌표 배치 유지, 참여자와 이모티콘 영역 추가
         JPanel chatPanel = new JPanel(null);
@@ -79,15 +91,11 @@ public class ChatClientView extends JFrame {
         contentPane.add(chatPanel, "CHAT");
         cards.show(contentPane, "ROOMS");
 
-        // 기존 요청대로 제한 시간 및 별도 로그인 성공 응답 확인 없음
+        // 로그인 화면에서 인증을 마친 연결을 그대로 사용한다.
         try {
-            socket = new Socket(ip_addr, Integer.parseInt(port_no));
-            is = socket.getInputStream();
-            dis = new DataInputStream(is);
-            os = socket.getOutputStream();
-            dos = new DataOutputStream(os);
-            dos.writeUTF("/login " + UserName);
-            dos.flush();
+            socket = connectedSocket;
+            dis = input;
+            dos = output;
             Myaction action = new Myaction();
             btnSend.addActionListener(action);
             txtInput.addActionListener(action);
@@ -101,7 +109,7 @@ public class ChatClientView extends JFrame {
             });
             ListenNetwork net = new ListenNetwork();
             net.start();
-        } catch (IOException | RuntimeException e) {
+        } catch (RuntimeException e) {
             closeSocket(); dispose(); throw e;
         }
     }
@@ -122,7 +130,7 @@ public class ChatClientView extends JFrame {
                 SwingUtilities.invokeLater(() -> {
                     btnSend.setEnabled(false); txtInput.setEnabled(false);
                     btnEmoji.setEnabled(false); btnLeave.setEnabled(false);
-                    roomList.setConnected(false);
+                    roomList.setConnected(false); friendList.setConnected(false);
                 });
             }
         }
@@ -130,6 +138,9 @@ public class ChatClientView extends JFrame {
 
     // 서버가 보낸 종류별 메시지를 GUI에 반영 (EDT)
     private void handleMessage(String msg) {
+        if (msg.equals("FRIENDS") || msg.startsWith("FRIENDS\n")) {
+            friendList.updateFriends(msg); return;
+        }
         if (msg.equals("ROOMS") || msg.startsWith("ROOMS\n")) {
             serverError = false;
             roomList.updateRooms(msg); return;
@@ -155,6 +166,7 @@ public class ChatClientView extends JFrame {
                 case "LEFT":
                     if (Integer.parseInt(data[1]) != currentRoomId) return;
                     currentRoomId = -1; members.clear();
+                    homeTabs.setSelectedComponent(roomList);
                     cards.show(contentPane, "ROOMS"); break;
                 case "NOTICE":
                     if (data.length >= 3 && Integer.parseInt(data[1]) == currentRoomId)
@@ -232,16 +244,18 @@ public class ChatClientView extends JFrame {
         AppendText("\n");
     }
     private void showStatus(String msg) {
-        if (currentRoomId == -1) roomList.setStatus(msg);
+        if (currentRoomId == -1) { roomList.setStatus(msg); friendList.setStatus(msg); }
         else AppendText("[안내] " + msg + "\n");
     }
+    java.util.List<String> getFriendNames() { return friendList.getFriendNames(); }
+
     public void SendMessage(String msg) {
         if (closed) return;
         try { dos.writeUTF(msg); dos.flush(); }
         catch (IOException e) {
             showStatus("메시지 전송 실패"); closeSocket();
             btnSend.setEnabled(false); txtInput.setEnabled(false);
-            btnEmoji.setEnabled(false); btnLeave.setEnabled(false); roomList.setConnected(false);
+            btnEmoji.setEnabled(false); btnLeave.setEnabled(false); roomList.setConnected(false); friendList.setConnected(false);
         }
     }
     private void closeSocket() {
