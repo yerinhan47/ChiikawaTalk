@@ -7,7 +7,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 
-// 교수님 JavaChatServer의 UserService를 별도 파일로 분리
+// 교수님 UserService 구조 유지: 사용자마다 하나의 Thread
 public class ClientService extends Thread {
     private InputStream is;
     private OutputStream os;
@@ -16,17 +16,29 @@ public class ClientService extends Thread {
     private final Socket client_socket;
     private final ChatServer server;
     private String UserName = "";
+    private ChatRoom currentRoom;
+    private String characterId = "";
 
     public ClientService(ChatServer server, Socket client_socket) {
         this.server = server;
         this.client_socket = client_socket;
     }
 
-    public String getUserName() {
-        return UserName;
+    public String getUserName() { return UserName; }
+    void setUserName(String name) { UserName = name; }
+    public ChatRoom getCurrentRoom() { return currentRoom; }
+    public String getCharacterId() { return characterId; }
+    void setCurrentRoom(ChatRoom room, String character) {
+        currentRoom = room;
+        characterId = character;
+    }
+    static boolean validCharacter(String id) {
+        return "CHIIKAWA".equals(id) || "HACHIWARE".equals(id) || "USAGI".equals(id);
+    }
+    static boolean validEmoji(String id) {
+        return "chiikawa_happy".equals(id) || "hachiware_love".equals(id) || "usagi_surprise".equals(id);
     }
 
-    // 클라이언트로 메시지 전송 (원본 WriteOne 유지)
     public synchronized boolean WriteOne(String msg) {
         try {
             dos.writeUTF(msg);
@@ -38,57 +50,74 @@ public class ClientService extends Thread {
         }
     }
 
-    // 모든 다중 클라이언트에게 채팅 메시지 전달 (원본 WriteAll 유지)
+    // 기존 전체 전송 메서드: 서버 전체 안내 등에 사용할 수 있다.
     public void WriteAll(String str) {
-        for (ClientService user : server.getUsers()) {
-            user.WriteOne(str);
-        }
+        for (ClientService user : server.getUsers()) user.WriteOne(str);
         server.AppendText(str);
     }
+
+    // 12주차: 일반 채팅은 소속된 방에만 전달
+    public void WriteRoom(String str) { server.sendChat(this, str); }
 
     @Override
     public void run() {
         try {
-            // 원본 생성자에서 하던 로그인 수신을 run()으로 이동
-            // 다른 사용자의 접속을 기다리는 AcceptServer가 막히지 않게 함
             is = client_socket.getInputStream();
             dis = new DataInputStream(is);
             os = client_socket.getOutputStream();
             dos = new DataOutputStream(os);
 
             String line1 = dis.readUTF();
-            if (!line1.startsWith("/login ")) {
-                WriteOne("[오류] 로그인 형식을 확인하세요.");
-                return;
+            boolean signup = line1.startsWith("/signup ");
+            if (!signup && !line1.startsWith("/login ")) {
+                WriteOne("AUTH_ERROR|로그인 형식을 확인하세요."); return;
             }
-            UserName = line1.substring(7).trim();
-            if (UserName.isEmpty() || UserName.length() > 20 ||
-                    UserName.contains("\n") || UserName.contains("\r")) {
-                WriteOne("[오류] 닉네임은 1~20글자여야 합니다.");
-                return;
+            String[] credentials = line1.substring(signup ? 8 : 7).split("\\|", -1);
+            if (credentials.length != 2) { WriteOne("AUTH_ERROR|로그인 형식을 확인하세요."); return; }
+            String name = credentials[0].trim(), password = credentials[1];
+            if (name.isEmpty() || name.length() > 20 || name.contains("\n") || name.contains("\r")
+                    || password.length() < 6 || password.length() > 64 || password.contains("\n") || password.contains("\r")) {
+                WriteOne("AUTH_ERROR|별명 1~20글자, 비밀번호 6~64글자를 입력하세요."); return;
             }
-            if (!server.register(this)) {
-                WriteOne("[오류] 이미 사용 중인 닉네임입니다.");
-                return;
-            }
-            WriteAll("[입장] " + UserName + "님이 입장했습니다.");
-
-            // 원본과 같이 readUTF()로 기다리고 WriteAll()로 전체 전송
+            try {
+                if (!server.authenticate(this, name, password, signup)) return;
+            } catch (IOException e) { WriteOne("AUTH_ERROR|계정 저장 또는 인증 처리 실패"); return; }
+            server.sendRooms(this);
             while (true) {
-                String msg = dis.readUTF();
-                msg = msg.trim();
+                String msg = dis.readUTF().trim();
                 if (msg.isEmpty()) continue;
                 if ("/exit".equalsIgnoreCase(msg)) break;
-                // 치이카와 톡: 서버에서 닉네임을 붙임
-                WriteAll(UserName + " : " + msg);
+                if (msg.equals("/friends")) {
+                    server.sendFriends(this);
+                } else if (msg.equals("/rooms")) {
+                    server.sendRooms(this);
+                } else if (msg.startsWith("/create ")) {
+                    server.createRoom(this, msg.substring(8).trim());
+                } else if (msg.startsWith("/join ")) {
+                    String[] parts = msg.split("\\s+", 3);
+                    try {
+                        if (parts.length != 3) throw new NumberFormatException();
+                        server.joinRoom(this, Integer.parseInt(parts[1]), parts[2]);
+                    } catch (NumberFormatException e) {
+                        WriteOne("ERROR|입장 형식: /join 방번호 캐릭터ID");
+                    }
+                } else if (msg.equals("/leave")) {
+                    server.leaveRoom(this, true);
+                } else if (msg.startsWith("/emoji ")) {
+                    server.sendEmoji(this, msg.substring(7).trim());
+                } else if (msg.startsWith("/chat ")) {
+                    WriteRoom(msg.substring(6));
+                } else if (msg.startsWith("/")) {
+                    WriteOne("ERROR|지원하지 않는 명령어입니다.");
+                } else {
+                    WriteRoom(msg);
+                }
             }
         } catch (IOException e) {
-            // 소켓 종료 및 통신 오류는 finally에서 처리
+            // 소켓 종료 시 아래 finally에서 방과 접속 목록을 정리
         } finally {
             closeSocket();
-            if (server.unregister(this)) {
-                WriteAll("[퇴장] " + UserName + "님이 퇴장했습니다.");
-            }
+            server.disconnect(this);
         }
     }
 

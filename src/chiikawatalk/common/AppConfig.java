@@ -1,4 +1,3 @@
-
 package chiikawatalk.common;
 
 public final class AppConfig {
