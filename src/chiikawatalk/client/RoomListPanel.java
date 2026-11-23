@@ -2,11 +2,13 @@ package chiikawatalk.client;
 
 import javax.swing.*;
 import java.awt.*;
+import java.util.List;
 
 // 채팅방 목록 화면: 네트워크는 ChatClientView의 SendMessage만 사용
 public class RoomListPanel extends JPanel {
     private final DefaultListModel<RoomItem> model = new DefaultListModel<>();
     private final JList<RoomItem> list = new JList<>(model);
+    private boolean connected = true;
     private final JLabel status = new JLabel("채팅방 목록을 불러오는 중...");
     private final JButton create = new JButton("방 생성");
     private final JButton join = new JButton("입장");
@@ -34,7 +36,19 @@ public class RoomListPanel extends JPanel {
             if (name.isEmpty() || name.length() > 30 || name.contains("|")) {
                 setStatus("방 이름은 1~30글자, | 제외"); return;
             }
-            view.SendMessage("/create " + name);
+            List<String> friends = view.getFriendNames();
+            if (friends.isEmpty()) { setStatus("현재 접속 중인 다른 사용자가 없습니다."); return; }
+            JList<String> inviteList = new JList<>(friends.toArray(new String[0]));
+            inviteList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+            inviteList.setVisibleRowCount(5);
+            JPanel invitePanel = new JPanel(new BorderLayout(5, 5));
+            invitePanel.add(new JLabel("초대할 친구 선택 (Ctrl/Shift로 여러 명 선택)"), BorderLayout.NORTH);
+            invitePanel.add(new JScrollPane(inviteList), BorderLayout.CENTER);
+            int result = JOptionPane.showConfirmDialog(this, invitePanel, "친구 초대", JOptionPane.OK_CANCEL_OPTION);
+            if (result != JOptionPane.OK_OPTION) return;
+            List<String> invited = inviteList.getSelectedValuesList();
+            if (invited.isEmpty()) { setStatus("초대할 친구를 한 명 이상 선택하세요."); return; }
+            view.SendMessage("/create " + name + "|" + String.join("|", invited));
         });
         join.addActionListener(e -> {
             RoomItem room = list.getSelectedValue();
@@ -45,14 +59,14 @@ public class RoomListPanel extends JPanel {
         refresh.addActionListener(e -> view.SendMessage("/rooms"));
     }
 
-    // ROOMS 응답 전체를 받아 목록을 갱신한다.
+    // ROOMS 응답: 방번호|이름|인원
     public void updateRooms(String message) {
         RoomItem selected = list.getSelectedValue();
         int selectedId = selected == null ? -1 : selected.id;
         model.clear();
         String[] lines = message.split("\n");
         for (int i = 1; i < lines.length; i++) {
-            String[] data = lines[i].split("\\|", 3);
+            String[] data = lines[i].split("\\|", -1);
             if (data.length != 3) continue;
             try {
                 RoomItem item = new RoomItem(Integer.parseInt(data[0]), data[1], Integer.parseInt(data[2]));
@@ -60,15 +74,21 @@ public class RoomListPanel extends JPanel {
                 if (item.id == selectedId) list.setSelectedIndex(model.size() - 1);
             } catch (NumberFormatException ignored) { }
         }
-        setStatus(model.isEmpty() ? "채팅방이 없습니다. 방을 생성하세요." : "채팅방 " + model.size() + "개");
+        if (connected) setStatus(model.isEmpty() ? "초대받거나 만든 방이 없습니다." : "채팅방 " + model.size() + "개");
     }
+
     public void setStatus(String message) { status.setText(message); }
     public void setConnected(boolean connected) {
+        this.connected = connected;
         create.setEnabled(connected); join.setEnabled(connected); refresh.setEnabled(connected);
     }
     private static class RoomItem {
         final int id; final String name; final int count;
-        RoomItem(int id, String name, int count) { this.id = id; this.name = name; this.count = count; }
-        @Override public String toString() { return "[" + id + "] " + name + "  (" + count + "명)"; }
+        RoomItem(int id, String name, int count) {
+            this.id = id; this.name = name; this.count = count;
+        }
+        @Override public String toString() {
+            return "[" + id + "] " + name + "  (" + count + "명)";
+        }
     }
 }
